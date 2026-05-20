@@ -13,17 +13,36 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
   const router = useRouter();
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      if (!data.user) {
-        router.push("/");
-      } else {
-        setUser(data.user);
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session?.user) {
+        setUser(data.session.user);
+        setLoading(false);
       }
     });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) {
+        setUser(session.user);
+        setLoading(false);
+      } else {
+        router.push("/login");
+      }
+    });
+
+    return () => subscription.unsubscribe();
   }, [router]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-teal-200 border-t-teal-600 rounded-full animate-spin" />
+      </div>
+    );
+  }
 
   if (!user) return null;
 
@@ -40,9 +59,7 @@ export default function DashboardLayout({
           <div className="flex items-center gap-4">
             <span className="text-sm text-stone-400">{user.email}</span>
             <button
-              onClick={() =>
-                supabase.auth.signOut().then(() => router.push("/"))
-              }
+              onClick={() => supabase.auth.signOut().then(() => router.push("/login"))}
               className="rounded-lg border border-stone-200 px-3 py-1.5 text-xs text-stone-500 hover:bg-stone-50"
             >
               Salir
