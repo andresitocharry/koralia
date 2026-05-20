@@ -236,13 +236,7 @@ async def media_stream(websocket: WebSocket):
     else:
         greeting = "Di en español: 'Hola, habla Koralia, ¿cómo está?' Sé breve y cálida."
 
-    await openai_ws.send(json.dumps({
-        "type": "response.create",
-        "response": {"instructions": greeting},
-    }))
-    log.info("Sent initial greeting")
-
-    # Step 4: Run forwarding loops
+    # Step 4: Run forwarding loops (greeting sent after loops start)
     request_host = [call_info.get("host", "")]
     transcript: list[dict] = []
     current_assistant_text: list[str] = []
@@ -381,8 +375,16 @@ async def media_stream(websocket: WebSocket):
         except Exception as e:
             log.error("OpenAI->Twilio error: %s", e)
 
+    async def send_greeting():
+        await asyncio.sleep(0.5)
+        await openai_ws.send(json.dumps({
+            "type": "response.create",
+            "response": {"instructions": greeting},
+        }))
+        log.info("Sent initial greeting")
+
     try:
-        await asyncio.gather(forward_twilio_to_openai(), forward_openai_to_twilio())
+        await asyncio.gather(forward_twilio_to_openai(), forward_openai_to_twilio(), send_greeting())
     finally:
         await openai_ws.close()
 
