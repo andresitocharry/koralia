@@ -13,6 +13,7 @@ import {
   UtensilsCrossed,
   Users,
   Star,
+  Link2,
   Smile,
   CalendarClock,
   FileText,
@@ -40,6 +41,12 @@ interface KnowledgeEntry {
   created_at: string;
 }
 
+interface Connection {
+  abuelito_id: string;
+  abuelito_name: string;
+  shared_interests: string[];
+}
+
 const CATEGORY_CONFIG: Record<
   string,
   { label: string; color: string; bg: string; icon: typeof Heart }
@@ -58,6 +65,8 @@ export default function AbuelitoDetailPage() {
   const [abuelito, setAbuelito] = useState<Abuelito | null>(null);
   const [calls, setCalls] = useState<Call[]>([]);
   const [knowledge, setKnowledge] = useState<KnowledgeEntry[]>([]);
+  const [connections, setConnections] = useState<Connection[]>([]);
+  const [loadingConnections, setLoadingConnections] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -74,6 +83,13 @@ export default function AbuelitoDetailPage() {
       .select("id, category, content, created_at")
       .eq("abuelito_id", id).order("created_at", { ascending: false }).limit(50)
       .then(({ data }) => setKnowledge(data || []));
+
+    setLoadingConnections(true);
+    fetch(`http://localhost:5050/api/connections/${id}`)
+      .then((r) => r.json())
+      .then((data) => setConnections(data))
+      .catch(() => setConnections([]))
+      .finally(() => setLoadingConnections(false));
   }, [id]);
 
   if (!abuelito) return null;
@@ -244,6 +260,62 @@ export default function AbuelitoDetailPage() {
           )}
         </section>
       </div>
+
+      {/* Connections */}
+      <section className="space-y-4">
+        <h2 className="text-lg font-semibold text-stone-800 flex items-center gap-2">
+          <Link2 className="w-5 h-5 text-teal-500" />
+          Conexiones con otros abuelitos
+        </h2>
+        {loadingConnections ? (
+          <div className="rounded-2xl border border-stone-200 bg-white p-6 text-center">
+            <p className="text-sm text-stone-400">Buscando conexiones...</p>
+          </div>
+        ) : connections.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-stone-200 p-8 text-center">
+            <Users className="w-8 h-8 text-stone-300 mx-auto mb-2" />
+            <p className="text-sm text-stone-400">
+              Aún no hay conexiones. Se necesitan más llamadas para encontrar
+              intereses compartidos.
+            </p>
+          </div>
+        ) : (
+          <div className="grid gap-4 sm:grid-cols-2">
+            {connections.map((conn) => (
+              <div
+                key={conn.abuelito_id}
+                className="rounded-2xl border border-teal-100 bg-gradient-to-br from-teal-50 to-emerald-50 p-6"
+              >
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="w-10 h-10 rounded-full bg-gradient-to-br from-teal-400 to-emerald-500 flex items-center justify-center">
+                    <Users className="w-5 h-5 text-white" />
+                  </div>
+                  <div>
+                    <p className="font-semibold text-stone-800">
+                      {conn.abuelito_name}
+                    </p>
+                    <p className="text-xs text-teal-600">
+                      {conn.shared_interests.length} interés
+                      {conn.shared_interests.length !== 1 ? "es" : ""} en común
+                    </p>
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  {conn.shared_interests.map((interest, i) => (
+                    <div
+                      key={i}
+                      className="flex items-center gap-2 text-sm text-teal-700"
+                    >
+                      <div className="w-1.5 h-1.5 rounded-full bg-teal-400" />
+                      {interest}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
 }

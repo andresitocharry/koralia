@@ -12,7 +12,9 @@ from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
 from twilio.twiml.voice_response import VoiceResponse, Connect
 
-from src.knowledge import get_abuelito_by_phone, get_knowledge_context, save_call
+from fastapi.middleware.cors import CORSMiddleware
+
+from src.knowledge import get_abuelito_by_phone, get_knowledge_context, save_call, find_connections
 
 load_dotenv()
 
@@ -22,31 +24,32 @@ log = logging.getLogger("koralia")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
 
-BASE_PROMPT = """Eres Koralia, una amiga cariñosa que llama a abuelitos para charlar. Hablas como una nieta colombiana: cálida, cercana, con expresiones naturales.
+BASE_PROMPT = """IMPORTANTE: Habla ÚNICAMENTE en español colombiano. NUNCA respondas en otro idioma. Si alguien habla en otro idioma, responde en español. Sin excepciones.
 
-Cómo conversar:
-- Habla como en una conversación real, no como un robot. Usa "ajá", "¿en serio?", "¡qué rico!", "cuéntame más".
-- Haz UNA pregunta a la vez, nunca dos. Espera la respuesta antes de seguir.
-- Si el abuelito responde corto ("bien", "sí"), profundiza con curiosidad genuina: "¿Y qué fue lo mejor del día?"
-- Si hay silencio, no repitas la misma pregunta. Cambia de tema naturalmente: "Oye, ¿y qué almorzaste hoy?"
-- NO digas "Aquí estoy para escucharte" ni frases genéricas repetitivas.
-- NO repitas el nombre del abuelito en cada frase.
-- Reacciona con emoción a lo que cuenta: "¡Ay no, qué delicia!" o "¡Qué bueno que saliste a caminar!"
-- Cuenta anécdotas cortas tuyas para que la charla fluya: "A mí también me encanta el sancocho, ¿le echaste yuca?"
-- Si el abuelito se confunde o divaga, sigue el hilo con cariño. No lo corrijas.
+Eres Koralia, una amiga cariñosa que llama a abuelitos colombianos para charlar. Eres como una nieta: cálida, cercana, paciente.
 
-Temas que puedes explorar (uno a la vez, con naturalidad):
-- Qué comió hoy o qué va a comer
-- Cómo durmió anoche
-- Si salió a algún lado o vio a alguien
+Tu forma de hablar:
+- Español colombiano natural. Usa "ajá", "¿en serio?", "¡qué rico!", "vea pues", "¿cierto?".
+- Frases cortas y claras. Nada técnico.
+- UNA pregunta a la vez. Espera respuesta.
+- Si el abuelito dice algo corto ("bien", "sí"), profundiza: "¿Y qué fue lo mejor?"
+- Si hay silencio, cambia de tema: "Oye, ¿y qué almorzó hoy?"
+- Reacciona con emoción genuina: "¡Ay qué delicia!" o "¡Qué bueno!"
+- NO repitas frases genéricas como "aquí estoy para escucharte".
+- NO digas el nombre del abuelito en cada frase, solo de vez en cuando.
+- Si el abuelito se confunde o divaga, sigue el hilo con cariño.
+
+Temas para explorar (uno a la vez, naturalmente):
+- Qué comió o va a comer
+- Cómo durmió
+- Si salió o vio a alguien
 - Algo que lo tenga contento o preocupado
-- Una historia del pasado (los abuelitos aman contar historias)
+- Historias del pasado"""
 
-Habla siempre en español colombiano. Frases cortas. Sin jerga técnica."""
-
-VOICE = "shimmer"
+VOICE = "coral"
 
 app = FastAPI(title="Koralia")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 active_calls: dict[str, dict] = {}
 
@@ -54,6 +57,11 @@ active_calls: dict[str, dict] = {}
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/connections/{abuelito_id}")
+def get_connections(abuelito_id: str):
+    return find_connections(abuelito_id)
 
 
 @app.api_route("/incoming-call", methods=["GET", "POST"])
@@ -148,10 +156,20 @@ async def media_stream(websocket: WebSocket):
                 "input": {
                     "format": {"type": "audio/pcmu"},
                     "transcription": {"model": "gpt-4o-mini-transcribe", "language": "es"},
+                    "noise_reduction": {"type": "near_field"},
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "threshold": 0.95,
+                        "prefix_padding_ms": 500,
+                        "silence_duration_ms": 1200,
+                        "create_response": True,
+                        "interrupt_response": True,
+                    },
                 },
                 "output": {
                     "format": {"type": "audio/pcmu"},
                     "voice": VOICE,
+                    "speed": 1.15,
                 },
             },
         },
@@ -160,9 +178,10 @@ async def media_stream(websocket: WebSocket):
     update_response = await openai_ws.recv()
     log.info("session.update response: %s", update_response[:200])
 
-    greeting = "Saluda al abuelito con cariño. Preséntate como Koralia y pregúntale cómo está."
     if abuelito_name and abuelito_name != "desconocido":
-        greeting = f"Saluda a {abuelito_name} con cariño. Preséntate como Koralia y pregúntale cómo está."
+        greeting = f"Di en español: 'Hola {abuelito_name}, habla Koralia, ¿cómo está?' Sé breve y cálida."
+    else:
+        greeting = "Di en español: 'Hola, habla Koralia, ¿cómo está?' Sé breve y cálida."
 
     await openai_ws.send(json.dumps({
         "type": "response.create",
