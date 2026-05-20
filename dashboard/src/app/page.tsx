@@ -1,3 +1,4 @@
+import AuthRedirect from "./auth-redirect";
 import Image from "next/image";
 import Link from "next/link";
 import {
@@ -15,6 +16,7 @@ import {
 export default function LandingPage() {
   return (
     <div className="min-h-screen bg-white">
+      <AuthRedirect />
       {/* Nav */}
       <nav className="fixed top-0 w-full bg-white/90 backdrop-blur-md border-b border-stone-100 z-50">
         <div className="mx-auto max-w-6xl flex items-center justify-between px-6 py-3">

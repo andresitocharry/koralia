@@ -1,1 +1,11 @@
 @import "tailwindcss";
+
+.phone-input .PhoneInputInput {
+  outline: none;
+  background: transparent;
+  font-size: 0.875rem;
+}
+
+.phone-input .PhoneInputCountry {
+  margin-right: 0.5rem;
+}

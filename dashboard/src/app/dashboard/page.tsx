@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import Link from "next/link";
+import PhoneInput from "react-phone-number-input";
+import "react-phone-number-input/style.css";
 import {
   Phone,
   Brain,
@@ -100,7 +102,7 @@ export default function DashboardPage() {
         <form onSubmit={handleAdd} className="rounded-xl border border-stone-200 bg-white p-5 space-y-3">
           <div className="grid gap-3 sm:grid-cols-2">
             <input placeholder="Nombre" value={name} onChange={(e) => setName(e.target.value)} required className="rounded-lg border border-stone-200 px-3.5 py-2.5 text-sm focus:border-teal-400 focus:outline-none focus:ring-2 focus:ring-teal-50" />
-            <input placeholder="+573001234567" value={phone} onChange={(e) => setPhone(e.target.value)} required className="rounded-lg border border-stone-200 px-3.5 py-2.5 text-sm focus:border-teal-400 focus:outline-none focus:ring-2 focus:ring-teal-50" />
+            <PhoneInput placeholder="300 123 4567" value={phone} onChange={(v) => setPhone(v || "")} defaultCountry="CO" international countryCallingCodeEditable={false} className="phone-input rounded-lg border border-stone-200 px-3.5 py-2.5 text-sm focus-within:border-teal-400 focus-within:ring-2 focus-within:ring-teal-50" />
           </div>
           <textarea placeholder="Notas (opcional)" value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} className="w-full rounded-lg border border-stone-200 px-3.5 py-2.5 text-sm focus:border-teal-400 focus:outline-none focus:ring-2 focus:ring-teal-50" />
           <button type="submit" className="rounded-lg bg-teal-600 px-5 py-2.5 text-xs font-semibold text-white hover:bg-teal-700">Guardar</button>
