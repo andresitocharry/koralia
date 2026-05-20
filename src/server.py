@@ -1,13 +1,18 @@
+from __future__ import annotations
+
 import os
 import json
 import asyncio
 import logging
+import time
 
 import websockets
 from fastapi import FastAPI, WebSocket, Request
 from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
 from twilio.twiml.voice_response import VoiceResponse, Connect
+
+from src.knowledge import get_abuelito_by_phone, get_knowledge_context, save_call
 
 load_dotenv()
 
@@ -17,7 +22,7 @@ log = logging.getLogger("koralia")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
 
-SYSTEM_PROMPT = """Eres Koralia, una compañera cariñosa que llama a abuelitos para conversar.
+BASE_PROMPT = """Eres Koralia, una compañera cariñosa que llama a abuelitos para conversar.
 
 Tu objetivo es:
 - Preguntar cómo estuvo su día, qué comieron, cómo se sienten
@@ -38,6 +43,8 @@ VOICE = "shimmer"
 
 app = FastAPI(title="Koralia")
 
+active_calls: dict[str, dict] = {}
+
 
 @app.get("/health")
 def health():
@@ -46,12 +53,38 @@ def health():
 
 @app.api_route("/incoming-call", methods=["GET", "POST"])
 async def incoming_call(request: Request):
+    form = await request.form()
+    call_sid = form.get("CallSid", "")
+    to_number = form.get("To", "")
+    from_number = form.get("From", "")
+
+    abuelito_phone = to_number if form.get("Direction") == "outbound-api" else from_number
+    abuelito = get_abuelito_by_phone(abuelito_phone)
+
+    if abuelito:
+        active_calls[call_sid] = {
+            "abuelito_id": abuelito["id"],
+            "phone": abuelito_phone,
+            "name": abuelito["name"],
+            "start_time": time.time(),
+        }
+        log.info("Call for: %s (%s)", abuelito["name"], abuelito_phone)
+    else:
+        active_calls[call_sid] = {
+            "abuelito_id": None,
+            "phone": abuelito_phone,
+            "name": "desconocido",
+            "start_time": time.time(),
+        }
+        log.info("Call for unregistered: %s", abuelito_phone)
+
     response = VoiceResponse()
     response.say("Conectando con Koralia, un momento por favor.", language="es-MX")
     response.pause(length=1)
     host = request.headers.get("host")
     connect = Connect()
-    connect.stream(url=f"wss://{host}/media-stream")
+    stream = connect.stream(url=f"wss://{host}/media-stream")
+    stream.parameter(name="callSid", value=call_sid)
     response.append(connect)
     return HTMLResponse(content=str(response), media_type="application/xml")
 
@@ -61,12 +94,23 @@ async def media_stream(websocket: WebSocket):
     await websocket.accept()
     log.info("Twilio WebSocket accepted")
 
+    # Step 1: Wait for Twilio "start" event to get callSid
+    stream_sid = None
+    call_sid = None
+    while True:
+        msg = await websocket.receive_text()
+        data = json.loads(msg)
+        if data["event"] == "start":
+            stream_sid = data["start"]["streamSid"]
+            call_sid = data["start"].get("customParameters", {}).get("callSid", "")
+            log.info("Stream started: %s (call: %s)", stream_sid, call_sid)
+            break
+
+    # Step 2: Connect to OpenAI
     try:
         openai_ws = await websockets.connect(
             "wss://api.openai.com/v1/realtime?model=gpt-realtime",
-            additional_headers={
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
-            },
+            additional_headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
         )
         log.info("Connected to OpenAI Realtime API")
     except Exception as e:
@@ -74,53 +118,62 @@ async def media_stream(websocket: WebSocket):
         await websocket.close()
         return
 
-    stream_sid = None
+    # Step 3: Configure session with knowledge context
+    session_created = await openai_ws.recv()
+    log.info("session.created received")
 
-    async def configure_session():
-        session_created = await openai_ws.recv()
-        log.info("session.created received")
+    call_info = active_calls.get(call_sid, {})
+    abuelito_id = call_info.get("abuelito_id")
+    abuelito_name = call_info.get("name", "")
 
-        session_config = {
-            "type": "session.update",
-            "session": {
-                "type": "realtime",
-                "instructions": SYSTEM_PROMPT,
-                "audio": {
-                    "input": {
-                        "format": {"type": "audio/pcmu"},
-                    },
-                    "output": {
-                        "format": {"type": "audio/pcmu"},
-                        "voice": VOICE,
-                    },
+    instructions = BASE_PROMPT
+    if abuelito_id:
+        knowledge = get_knowledge_context(abuelito_id)
+        if knowledge:
+            instructions += f"\n\n{knowledge}"
+        if abuelito_name and abuelito_name != "desconocido":
+            instructions += f"\n\nEl abuelito se llama {abuelito_name}. Llámalo por su nombre."
+
+    await openai_ws.send(json.dumps({
+        "type": "session.update",
+        "session": {
+            "type": "realtime",
+            "instructions": instructions,
+            "audio": {
+                "input": {
+                    "format": {"type": "audio/pcmu"},
+                    "transcription": {"model": "gpt-4o-mini-transcribe", "language": "es"},
+                },
+                "output": {
+                    "format": {"type": "audio/pcmu"},
+                    "voice": VOICE,
                 },
             },
-        }
-        await openai_ws.send(json.dumps(session_config))
-        log.info("Sent session.update")
+        },
+    }))
 
-        response = await openai_ws.recv()
-        log.info("session.update response: %s", response[:300])
+    update_response = await openai_ws.recv()
+    log.info("session.update response: %s", update_response[:200])
 
-        await openai_ws.send(json.dumps({
-            "type": "response.create",
-            "response": {
-                "instructions": "Saluda al abuelito con cariño. Preséntate como Koralia y pregúntale cómo está.",
-            },
-        }))
-        log.info("Sent response.create for initial greeting")
+    greeting = "Saluda al abuelito con cariño. Preséntate como Koralia y pregúntale cómo está."
+    if abuelito_name and abuelito_name != "desconocido":
+        greeting = f"Saluda a {abuelito_name} con cariño. Preséntate como Koralia y pregúntale cómo está."
 
-    await configure_session()
+    await openai_ws.send(json.dumps({
+        "type": "response.create",
+        "response": {"instructions": greeting},
+    }))
+    log.info("Sent initial greeting")
+
+    # Step 4: Run forwarding loops
+    transcript: list[dict] = []
+    current_assistant_text: list[str] = []
 
     async def forward_twilio_to_openai():
-        nonlocal stream_sid
         try:
             async for message in websocket.iter_text():
                 data = json.loads(message)
-                if data["event"] == "start":
-                    stream_sid = data["start"]["streamSid"]
-                    log.info("Twilio stream started: %s", stream_sid)
-                elif data["event"] == "media":
+                if data["event"] == "media":
                     await openai_ws.send(json.dumps({
                         "type": "input_audio_buffer.append",
                         "audio": data["media"]["payload"],
@@ -129,34 +182,43 @@ async def media_stream(websocket: WebSocket):
                     log.info("Twilio stream stopped")
         except Exception as e:
             log.error("Twilio->OpenAI error: %s", e)
+        finally:
+            # Twilio disconnected — close OpenAI to unblock the other task
+            await openai_ws.close()
 
     async def forward_openai_to_twilio():
-        audio_chunks = 0
+        nonlocal current_assistant_text
         try:
             async for message in openai_ws:
                 data = json.loads(message)
                 event_type = data.get("type", "")
 
-                if event_type == "response.output_audio.delta" and stream_sid:
-                    audio_chunks += 1
+                if event_type == "response.output_audio.delta":
                     await websocket.send_json({
                         "event": "media",
                         "streamSid": stream_sid,
                         "media": {"payload": data["delta"]},
                     })
-                elif event_type == "input_audio_buffer.speech_started" and stream_sid:
-                    log.info("Speech detected, clearing Twilio buffer")
+                elif event_type == "response.output_audio_transcript.delta":
+                    current_assistant_text.append(data.get("delta", ""))
+                elif event_type == "response.output_audio_transcript.done":
+                    full_text = "".join(current_assistant_text)
+                    if full_text.strip():
+                        transcript.append({"role": "assistant", "text": full_text})
+                        log.info("Koralia: %s", full_text[:100])
+                    current_assistant_text = []
+                elif event_type == "conversation.item.input_audio_transcription.completed":
+                    user_text = data.get("transcript", "")
+                    if user_text.strip():
+                        transcript.append({"role": "user", "text": user_text})
+                        log.info("Abuelito: %s", user_text[:100])
+                elif event_type == "input_audio_buffer.speech_started":
                     await websocket.send_json({
                         "event": "clear",
                         "streamSid": stream_sid,
                     })
                 elif event_type == "error":
                     log.error("OpenAI error: %s", json.dumps(data))
-                elif event_type == "response.done":
-                    log.info("Response done. Audio chunks sent: %d", audio_chunks)
-                    audio_chunks = 0
-                else:
-                    log.info("OpenAI event: %s", event_type)
         except Exception as e:
             log.error("OpenAI->Twilio error: %s", e)
 
@@ -164,4 +226,17 @@ async def media_stream(websocket: WebSocket):
         await asyncio.gather(forward_twilio_to_openai(), forward_openai_to_twilio())
     finally:
         await openai_ws.close()
-        log.info("OpenAI WebSocket closed")
+
+        call_info = active_calls.pop(call_sid, {})
+        abuelito_id = call_info.get("abuelito_id")
+        if abuelito_id and transcript:
+            duration = int(time.time() - call_info.get("start_time", time.time()))
+            try:
+                call_id = save_call(abuelito_id, transcript, duration)
+                log.info("Post-call complete: %s (%d entries in transcript)", call_id, len(transcript))
+            except Exception as e:
+                log.error("Failed to save call: %s", e)
+        elif transcript:
+            log.info("Unregistered call transcript: %d entries", len(transcript))
+
+        log.info("Call ended")
