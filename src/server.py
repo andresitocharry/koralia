@@ -10,7 +10,8 @@ import websockets
 from fastapi import FastAPI, WebSocket, Request
 from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
-from twilio.twiml.voice_response import VoiceResponse, Connect
+from twilio.twiml.voice_response import VoiceResponse, Connect, Dial
+from twilio.rest import Client as TwilioClient
 
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -23,6 +24,9 @@ log = logging.getLogger("koralia")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
+TWILIO_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+twilio_client = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
 
 BASE_PROMPT = """IMPORTANTE: Habla ÚNICAMENTE en español colombiano. NUNCA respondas en otro idioma. Si alguien habla en otro idioma, responde en español. Sin excepciones.
 
@@ -64,6 +68,18 @@ def get_connections(abuelito_id: str):
     return find_connections(abuelito_id)
 
 
+@app.api_route("/conference-twiml", methods=["GET", "POST"])
+async def conference_twiml(request: Request):
+    form = await request.form()
+    room = form.get("room", "koralia-connect")
+    response = VoiceResponse()
+    response.say("Los estoy conectando, un momento.", language="es-MX")
+    dial = Dial()
+    dial.conference(room, start_conference_on_enter=True, end_conference_on_exit=True)
+    response.append(dial)
+    return HTMLResponse(content=str(response), media_type="application/xml")
+
+
 @app.api_route("/incoming-call", methods=["GET", "POST"])
 async def incoming_call(request: Request):
     form = await request.form()
@@ -74,12 +90,14 @@ async def incoming_call(request: Request):
     abuelito_phone = to_number if form.get("Direction") == "outbound-api" else from_number
     abuelito = get_abuelito_by_phone(abuelito_phone)
 
+    host = request.headers.get("host", "")
     if abuelito:
         active_calls[call_sid] = {
             "abuelito_id": abuelito["id"],
             "phone": abuelito_phone,
             "name": abuelito["name"],
             "start_time": time.time(),
+            "host": host,
         }
         log.info("Call for: %s (%s)", abuelito["name"], abuelito_phone)
     else:
@@ -88,6 +106,7 @@ async def incoming_call(request: Request):
             "phone": abuelito_phone,
             "name": "desconocido",
             "start_time": time.time(),
+            "host": host,
         }
         log.info("Call for unregistered: %s", abuelito_phone)
 
@@ -140,6 +159,8 @@ async def media_stream(websocket: WebSocket):
     abuelito_name = call_info.get("name", "")
 
     instructions = BASE_PROMPT
+    connection_targets: dict[str, dict] = {}
+
     if abuelito_id:
         knowledge = get_knowledge_context(abuelito_id)
         if knowledge:
@@ -147,11 +168,40 @@ async def media_stream(websocket: WebSocket):
         if abuelito_name and abuelito_name != "desconocido":
             instructions += f"\n\nEl abuelito se llama {abuelito_name}. Llámalo por su nombre."
 
+        conns = find_connections(abuelito_id)
+        if conns:
+            conn_text = "\n\nConexiones disponibles — otros abuelitos con intereses en comun:"
+            for c in conns:
+                conn_text += f"\n- {c['abuelito_name']}: {', '.join(c['shared_interests'])}"
+                connection_targets[c["abuelito_name"].lower()] = c
+            conn_text += "\n\nDurante la conversacion, si el momento es natural, menciona que conoces a alguien con gustos similares. Si el abuelito quiere hablar con esa persona, usa la herramienta connect_with_friend para conectarlos en llamada."
+            instructions += conn_text
+
+    tools = []
+    if connection_targets:
+        tools = [{
+            "type": "function",
+            "name": "connect_with_friend",
+            "description": "Conecta al abuelito actual con otro abuelito que tiene intereses en comun. Usa esta herramienta cuando el abuelito diga que si quiere hablar con la otra persona.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "friend_name": {
+                        "type": "string",
+                        "description": "Nombre del abuelito con quien conectar",
+                    },
+                },
+                "required": ["friend_name"],
+            },
+        }]
+
     await openai_ws.send(json.dumps({
         "type": "session.update",
         "session": {
             "type": "realtime",
             "instructions": instructions,
+            "tools": tools,
+            "tool_choice": "auto" if tools else "none",
             "audio": {
                 "input": {
                     "format": {"type": "audio/pcmu"},
@@ -190,6 +240,7 @@ async def media_stream(websocket: WebSocket):
     log.info("Sent initial greeting")
 
     # Step 4: Run forwarding loops
+    request_host = [call_info.get("host", "")]
     transcript: list[dict] = []
     current_assistant_text: list[str] = []
 
@@ -209,6 +260,64 @@ async def media_stream(websocket: WebSocket):
         finally:
             # Twilio disconnected — close OpenAI to unblock the other task
             await openai_ws.close()
+
+    async def handle_connect_tool(friend_name: str, tool_call_id: str):
+        """Connect current abuelito with a friend via Twilio conference."""
+        target = connection_targets.get(friend_name.lower())
+        if not target:
+            for k, v in connection_targets.items():
+                if friend_name.lower() in k or k in friend_name.lower():
+                    target = v
+                    break
+
+        if not target:
+            await openai_ws.send(json.dumps({
+                "type": "conversation.item.create",
+                "item": {"type": "function_call_output", "call_id": tool_call_id, "output": "No encontre a esa persona."},
+            }))
+            await openai_ws.send(json.dumps({"type": "response.create"}))
+            return
+
+        from src.knowledge import supabase as sb
+        friend_data = sb.table("abuelitos").select("phone").eq("id", target["abuelito_id"]).single().execute()
+        friend_phone = friend_data.data["phone"] if friend_data.data else None
+
+        if not friend_phone:
+            await openai_ws.send(json.dumps({
+                "type": "conversation.item.create",
+                "item": {"type": "function_call_output", "call_id": tool_call_id, "output": "No pude encontrar el telefono."},
+            }))
+            await openai_ws.send(json.dumps({"type": "response.create"}))
+            return
+
+        room_name = f"koralia-{call_sid[:8]}"
+        tunnel_url = request_host[0] if request_host else "localhost:5050"
+        conf_url = f"https://{tunnel_url}/conference-twiml?room={room_name}"
+
+        try:
+            twilio_client.calls(call_sid).update(
+                twiml=f'<Response><Say language="es-MX">Conectando con {target["abuelito_name"]}, un momento.</Say><Dial><Conference startConferenceOnEnter="true" endConferenceOnExit="true">{room_name}</Conference></Dial></Response>'
+            )
+
+            twilio_client.calls.create(
+                to=friend_phone,
+                from_=TWILIO_PHONE_NUMBER,
+                twiml=f'<Response><Say language="es-MX">Hola {target["abuelito_name"]}, Koralia te conecta con un amigo. Ya los uno.</Say><Dial><Conference startConferenceOnEnter="true" endConferenceOnExit="true">{room_name}</Conference></Dial></Response>'
+            )
+            log.info("Conference created: %s connecting %s with %s", room_name, abuelito_name, target["abuelito_name"])
+
+            await openai_ws.send(json.dumps({
+                "type": "conversation.item.create",
+                "item": {"type": "function_call_output", "call_id": tool_call_id, "output": f"Listo, estoy conectando a {abuelito_name} con {target['abuelito_name']}. La llamada sera redirigida a una conferencia."},
+            }))
+            await openai_ws.send(json.dumps({"type": "response.create"}))
+        except Exception as e:
+            log.error("Failed to create conference: %s", e)
+            await openai_ws.send(json.dumps({
+                "type": "conversation.item.create",
+                "item": {"type": "function_call_output", "call_id": tool_call_id, "output": "Hubo un problema tecnico, no pude conectarlos."},
+            }))
+            await openai_ws.send(json.dumps({"type": "response.create"}))
 
     async def forward_openai_to_twilio():
         nonlocal current_assistant_text
@@ -241,6 +350,16 @@ async def media_stream(websocket: WebSocket):
                         "event": "clear",
                         "streamSid": stream_sid,
                     })
+                elif event_type == "response.function_call_arguments.done":
+                    fn_name = data.get("name", "")
+                    call_id = data.get("call_id", "")
+                    try:
+                        args = json.loads(data.get("arguments", "{}"))
+                    except json.JSONDecodeError:
+                        args = {}
+                    if fn_name == "connect_with_friend":
+                        log.info("Tool call: connect_with_friend(%s)", args.get("friend_name"))
+                        await handle_connect_tool(args.get("friend_name", ""), call_id)
                 elif event_type == "error":
                     log.error("OpenAI error: %s", json.dumps(data))
         except Exception as e:
