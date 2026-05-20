@@ -90,7 +90,8 @@ export default function AbuelitoDetailPage() {
     supabase.from("calls").select("id, started_at, duration_seconds, summary, mood").eq("abuelito_id", id).order("started_at", { ascending: false }).limit(20).then(({ data }) => setCalls(data || []));
     supabase.from("knowledge_entries").select("id, category, content, created_at").eq("abuelito_id", id).order("created_at", { ascending: false }).limit(50).then(({ data }) => setKnowledge(data || []));
     setLoadingConnections(true);
-    fetch(`http://localhost:5050/api/connections/${id}`).then((r) => r.json()).then((d) => setConnections(d)).catch(() => setConnections([])).finally(() => setLoadingConnections(false));
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5050";
+    fetch(`${apiUrl}/api/connections/${id}`).then((r) => r.json()).then((d) => setConnections(d)).catch(() => setConnections([])).finally(() => setLoadingConnections(false));
 
     // Load past connections from DB
     Promise.all([
