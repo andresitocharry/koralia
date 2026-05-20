@@ -170,9 +170,12 @@ async def media_stream(websocket: WebSocket):
 
         conns = find_connections(abuelito_id)
         if conns:
+            from src.knowledge import supabase as sb
             conn_text = "\n\nConexiones disponibles — otros abuelitos con intereses en comun:"
             for c in conns:
                 conn_text += f"\n- {c['abuelito_name']}: {', '.join(c['shared_interests'])}"
+                phone_data = sb.table("abuelitos").select("phone").eq("id", c["abuelito_id"]).single().execute()
+                c["phone"] = phone_data.data["phone"] if phone_data.data else None
                 connection_targets[c["abuelito_name"].lower()] = c
             conn_text += "\n\nDurante la conversacion, si el momento es natural, menciona que conoces a alguien con gustos similares. Si el abuelito quiere hablar con esa persona, usa la herramienta connect_with_friend para conectarlos en llamada."
             instructions += conn_text
@@ -213,7 +216,7 @@ async def media_stream(websocket: WebSocket):
                         "prefix_padding_ms": 500,
                         "silence_duration_ms": 1200,
                         "create_response": True,
-                        "interrupt_response": True,
+                        "interrupt_response": False,
                     },
                 },
                 "output": {
@@ -278,9 +281,7 @@ async def media_stream(websocket: WebSocket):
             await openai_ws.send(json.dumps({"type": "response.create"}))
             return
 
-        from src.knowledge import supabase as sb
-        friend_data = sb.table("abuelitos").select("phone").eq("id", target["abuelito_id"]).single().execute()
-        friend_phone = friend_data.data["phone"] if friend_data.data else None
+        friend_phone = target.get("phone")
 
         if not friend_phone:
             await openai_ws.send(json.dumps({
@@ -295,16 +296,31 @@ async def media_stream(websocket: WebSocket):
         conf_url = f"https://{tunnel_url}/conference-twiml?room={room_name}"
 
         try:
-            twilio_client.calls(call_sid).update(
-                twiml=f'<Response><Say language="es-MX">Conectando con {target["abuelito_name"]}, un momento.</Say><Dial><Conference startConferenceOnEnter="true" endConferenceOnExit="true">{room_name}</Conference></Dial></Response>'
-            )
-
-            twilio_client.calls.create(
-                to=friend_phone,
-                from_=TWILIO_PHONE_NUMBER,
-                twiml=f'<Response><Say language="es-MX">Hola {target["abuelito_name"]}, Koralia te conecta con un amigo. Ya los uno.</Say><Dial><Conference startConferenceOnEnter="true" endConferenceOnExit="true">{room_name}</Conference></Dial></Response>'
+            loop = asyncio.get_event_loop()
+            await asyncio.gather(
+                loop.run_in_executor(None, lambda: twilio_client.calls(call_sid).update(
+                    twiml=f'<Response><Say language="es-MX">Conectando con {target["abuelito_name"]}.</Say><Dial><Conference startConferenceOnEnter="true" endConferenceOnExit="true">{room_name}</Conference></Dial></Response>'
+                )),
+                loop.run_in_executor(None, lambda: twilio_client.calls.create(
+                    to=friend_phone,
+                    from_=TWILIO_PHONE_NUMBER,
+                    twiml=f'<Response><Say language="es-MX">Hola, Koralia te conecta con un amigo.</Say><Dial><Conference startConferenceOnEnter="true" endConferenceOnExit="true">{room_name}</Conference></Dial></Response>'
+                )),
             )
             log.info("Conference created: %s connecting %s with %s", room_name, abuelito_name, target["abuelito_name"])
+
+            # Save connection to DB
+            try:
+                sb.table("connections").insert({
+                    "abuelito_a_id": abuelito_id,
+                    "abuelito_b_id": target["abuelito_id"],
+                    "shared_interests": target.get("shared_interests", []),
+                    "source_call_id": None,
+                    "status": "completed",
+                }).execute()
+                log.info("Connection saved to DB")
+            except Exception as db_err:
+                log.error("Failed to save connection: %s", db_err)
 
             await openai_ws.send(json.dumps({
                 "type": "conversation.item.create",

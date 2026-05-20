@@ -64,6 +64,7 @@ export default function AbuelitoDetailPage() {
   const [knowledge, setKnowledge] = useState<KnowledgeEntry[]>([]);
   const [connections, setConnections] = useState<Connection[]>([]);
   const [loadingConnections, setLoadingConnections] = useState(false);
+  const [pastConnections, setPastConnections] = useState<any[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -90,6 +91,18 @@ export default function AbuelitoDetailPage() {
     supabase.from("knowledge_entries").select("id, category, content, created_at").eq("abuelito_id", id).order("created_at", { ascending: false }).limit(50).then(({ data }) => setKnowledge(data || []));
     setLoadingConnections(true);
     fetch(`http://localhost:5050/api/connections/${id}`).then((r) => r.json()).then((d) => setConnections(d)).catch(() => setConnections([])).finally(() => setLoadingConnections(false));
+
+    // Load past connections from DB
+    Promise.all([
+      supabase.from("connections").select("*, abuelitos!connections_abuelito_b_id_fkey(name)").eq("abuelito_a_id", id).order("created_at", { ascending: false }),
+      supabase.from("connections").select("*, abuelitos!connections_abuelito_a_id_fkey(name)").eq("abuelito_b_id", id).order("created_at", { ascending: false }),
+    ]).then(([asA, asB]) => {
+      const all = [
+        ...(asA.data || []).map((c: any) => ({ ...c, friend_name: c.abuelitos?.name || "?" })),
+        ...(asB.data || []).map((c: any) => ({ ...c, friend_name: c.abuelitos?.name || "?" })),
+      ].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      setPastConnections(all);
+    });
   }, [id]);
 
   if (!abuelito) return null;
@@ -210,7 +223,40 @@ export default function AbuelitoDetailPage() {
             </div>
           )}
 
-          {calls.length === 0 && !latestMood && (
+          {/* Past connections */}
+          {pastConnections.length > 0 && (
+            <div className="rounded-xl bg-white border border-stone-200/60 p-4">
+              <p className="text-[10px] font-medium uppercase tracking-wide text-stone-400 mb-3 flex items-center gap-1.5">
+                <Phone className="w-3.5 h-3.5 text-teal-500" /> Llamadas con amigos
+              </p>
+              <div className="space-y-3">
+                {pastConnections.map((c: any) => (
+                  <div key={c.id} className="rounded-lg bg-gradient-to-r from-teal-50 to-emerald-50 border border-teal-100 px-4 py-3">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <div className="flex items-center gap-2">
+                        <Link2 className="w-3.5 h-3.5 text-teal-600" />
+                        <span className="text-sm font-medium text-teal-800">
+                          Conectado con {c.friend_name}
+                        </span>
+                      </div>
+                      <span className="text-[10px] text-teal-500">
+                        {new Date(c.created_at).toLocaleDateString("es-CO", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                    </div>
+                    {c.shared_interests?.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {c.shared_interests.map((interest: string, i: number) => (
+                          <span key={i} className="rounded bg-teal-100 px-2 py-0.5 text-[10px] text-teal-700">{interest}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {calls.length === 0 && !latestMood && pastConnections.length === 0 && (
             <div className="rounded-xl border border-dashed border-stone-200 p-10 text-center">
               <Phone className="w-6 h-6 text-stone-200 mx-auto mb-2" />
               <p className="text-xs text-stone-400">Aun no hay actividad. Haz la primera llamada.</p>
