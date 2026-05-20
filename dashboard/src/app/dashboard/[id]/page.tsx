@@ -4,6 +4,19 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
+import {
+  ArrowLeft,
+  Phone,
+  Brain,
+  Clock,
+  Heart,
+  UtensilsCrossed,
+  Users,
+  Star,
+  Smile,
+  CalendarClock,
+  FileText,
+} from "lucide-react";
 
 interface Abuelito {
   id: string;
@@ -27,24 +40,17 @@ interface KnowledgeEntry {
   created_at: string;
 }
 
-const CATEGORY_LABELS: Record<string, string> = {
-  health: "Salud",
-  food: "Alimentación",
-  family: "Familia",
-  interests: "Intereses",
-  mood: "Ánimo",
-  routine: "Rutina",
-  other: "Otro",
-};
-
-const CATEGORY_COLORS: Record<string, string> = {
-  health: "bg-red-100 text-red-700",
-  food: "bg-orange-100 text-orange-700",
-  family: "bg-blue-100 text-blue-700",
-  interests: "bg-purple-100 text-purple-700",
-  mood: "bg-yellow-100 text-yellow-700",
-  routine: "bg-green-100 text-green-700",
-  other: "bg-stone-100 text-stone-700",
+const CATEGORY_CONFIG: Record<
+  string,
+  { label: string; color: string; bg: string; icon: typeof Heart }
+> = {
+  health: { label: "Salud", color: "text-red-600", bg: "bg-red-50 border-red-100", icon: Heart },
+  food: { label: "Alimentación", color: "text-orange-600", bg: "bg-orange-50 border-orange-100", icon: UtensilsCrossed },
+  family: { label: "Familia", color: "text-blue-600", bg: "bg-blue-50 border-blue-100", icon: Users },
+  interests: { label: "Intereses", color: "text-purple-600", bg: "bg-purple-50 border-purple-100", icon: Star },
+  mood: { label: "Ánimo", color: "text-yellow-600", bg: "bg-yellow-50 border-yellow-100", icon: Smile },
+  routine: { label: "Rutina", color: "text-green-600", bg: "bg-green-50 border-green-100", icon: CalendarClock },
+  other: { label: "Otro", color: "text-stone-600", bg: "bg-stone-50 border-stone-100", icon: FileText },
 };
 
 export default function AbuelitoDetailPage() {
@@ -56,27 +62,17 @@ export default function AbuelitoDetailPage() {
   useEffect(() => {
     if (!id) return;
 
-    supabase
-      .from("abuelitos")
-      .select("*")
-      .eq("id", id)
-      .single()
+    supabase.from("abuelitos").select("*").eq("id", id).single()
       .then(({ data }) => setAbuelito(data));
 
-    supabase
-      .from("calls")
+    supabase.from("calls")
       .select("id, started_at, duration_seconds, summary, mood")
-      .eq("abuelito_id", id)
-      .order("started_at", { ascending: false })
-      .limit(20)
+      .eq("abuelito_id", id).order("started_at", { ascending: false }).limit(20)
       .then(({ data }) => setCalls(data || []));
 
-    supabase
-      .from("knowledge_entries")
+    supabase.from("knowledge_entries")
       .select("id, category, content, created_at")
-      .eq("abuelito_id", id)
-      .order("created_at", { ascending: false })
-      .limit(50)
+      .eq("abuelito_id", id).order("created_at", { ascending: false }).limit(50)
       .then(({ data }) => setKnowledge(data || []));
   }, [id]);
 
@@ -92,52 +88,103 @@ export default function AbuelitoDetailPage() {
     return new Date(dateStr).toLocaleDateString("es-CO", {
       day: "numeric",
       month: "short",
-      year: "numeric",
       hour: "2-digit",
       minute: "2-digit",
     });
   }
 
+  const knowledgeByCategory = knowledge.reduce(
+    (acc, entry) => {
+      const cat = entry.category || "other";
+      if (!acc[cat]) acc[cat] = [];
+      acc[cat].push(entry);
+      return acc;
+    },
+    {} as Record<string, KnowledgeEntry[]>
+  );
+
   return (
     <div className="space-y-8">
+      {/* Header */}
       <div className="flex items-center gap-4">
         <Link
           href="/dashboard"
-          className="text-stone-400 hover:text-stone-600"
+          className="flex items-center justify-center w-10 h-10 rounded-full bg-white border border-stone-200 text-stone-400 hover:text-stone-600 hover:border-stone-300 transition-all"
         >
-          &larr;
+          <ArrowLeft className="w-4 h-4" />
         </Link>
-        <div>
-          <h1 className="text-2xl font-bold">{abuelito.name}</h1>
-          <p className="text-sm text-stone-500">{abuelito.phone}</p>
+        <div className="flex-1">
+          <h1 className="text-2xl font-bold text-stone-800">
+            {abuelito.name}
+          </h1>
+          <p className="text-sm text-stone-400">{abuelito.phone}</p>
+        </div>
+      </div>
+
+      {/* Stats */}
+      <div className="grid grid-cols-3 gap-4">
+        <div className="rounded-2xl bg-white border border-stone-200 p-4 text-center">
+          <div className="flex justify-center mb-2">
+            <Phone className="w-5 h-5 text-teal-500" />
+          </div>
+          <p className="text-2xl font-bold text-teal-600">{calls.length}</p>
+          <p className="text-xs text-stone-400 mt-1">Llamadas</p>
+        </div>
+        <div className="rounded-2xl bg-white border border-stone-200 p-4 text-center">
+          <div className="flex justify-center mb-2">
+            <Brain className="w-5 h-5 text-amber-500" />
+          </div>
+          <p className="text-2xl font-bold text-amber-600">
+            {knowledge.length}
+          </p>
+          <p className="text-xs text-stone-400 mt-1">Datos aprendidos</p>
+        </div>
+        <div className="rounded-2xl bg-white border border-stone-200 p-4 text-center">
+          <div className="flex justify-center mb-2">
+            <Clock className="w-5 h-5 text-purple-500" />
+          </div>
+          <p className="text-2xl font-bold text-purple-600">
+            {calls.length > 0
+              ? formatDuration(
+                  Math.round(
+                    calls.reduce((s, c) => s + c.duration_seconds, 0) /
+                      calls.length
+                  )
+                )
+              : "—"}
+          </p>
+          <p className="text-xs text-stone-400 mt-1">Duración promedio</p>
         </div>
       </div>
 
       <div className="grid gap-8 lg:grid-cols-2">
         {/* Calls */}
         <section className="space-y-4">
-          <h2 className="text-lg font-semibold">
-            Llamadas ({calls.length})
+          <h2 className="text-lg font-semibold text-stone-800">
+            Historial de llamadas
           </h2>
           {calls.length === 0 ? (
-            <p className="text-sm text-stone-400">Sin llamadas aún</p>
+            <div className="rounded-2xl border border-dashed border-stone-200 p-8 text-center">
+              <Phone className="w-8 h-8 text-stone-300 mx-auto mb-2" />
+              <p className="text-sm text-stone-400">Sin llamadas aún</p>
+            </div>
           ) : (
             <div className="space-y-3">
               {calls.map((call) => (
                 <div
                   key={call.id}
-                  className="rounded-xl border border-stone-200 bg-white p-4"
+                  className="rounded-2xl border border-stone-200 bg-white p-5 hover:shadow-sm transition-shadow"
                 >
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-stone-500">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-medium text-stone-600">
                       {formatDate(call.started_at)}
                     </span>
-                    <span className="text-xs text-stone-400">
+                    <span className="rounded-full bg-stone-100 px-2.5 py-0.5 text-xs text-stone-500">
                       {formatDuration(call.duration_seconds)}
                     </span>
                   </div>
                   {call.summary && (
-                    <p className="mt-2 text-sm leading-relaxed">
+                    <p className="text-sm text-stone-600 leading-relaxed">
                       {call.summary}
                     </p>
                   )}
@@ -149,33 +196,50 @@ export default function AbuelitoDetailPage() {
 
         {/* Knowledge */}
         <section className="space-y-4">
-          <h2 className="text-lg font-semibold">
-            Lo que Koralia sabe ({knowledge.length})
+          <h2 className="text-lg font-semibold text-stone-800">
+            Lo que Koralia sabe
           </h2>
           {knowledge.length === 0 ? (
-            <p className="text-sm text-stone-400">
-              Koralia aún no ha aprendido nada. Haz una llamada primero.
-            </p>
+            <div className="rounded-2xl border border-dashed border-stone-200 p-8 text-center">
+              <Brain className="w-8 h-8 text-stone-300 mx-auto mb-2" />
+              <p className="text-sm text-stone-400">
+                Koralia aún no ha aprendido nada
+              </p>
+            </div>
           ) : (
-            <div className="space-y-2">
-              {knowledge.map((entry) => (
-                <div
-                  key={entry.id}
-                  className="rounded-lg border border-stone-200 bg-white px-4 py-3"
-                >
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${CATEGORY_COLORS[entry.category] || CATEGORY_COLORS.other}`}
-                    >
-                      {CATEGORY_LABELS[entry.category] || entry.category}
-                    </span>
-                    <span className="text-xs text-stone-400">
-                      {formatDate(entry.created_at)}
-                    </span>
+            <div className="space-y-5">
+              {Object.entries(knowledgeByCategory).map(([cat, entries]) => {
+                const config = CATEGORY_CONFIG[cat] || CATEGORY_CONFIG.other;
+                const Icon = config.icon;
+                return (
+                  <div key={cat}>
+                    <div className="flex items-center gap-2 mb-2">
+                      <Icon className={`w-4 h-4 ${config.color}`} />
+                      <span className="text-sm font-medium text-stone-600">
+                        {config.label}
+                      </span>
+                      <span className="text-xs text-stone-300">
+                        ({entries.length})
+                      </span>
+                    </div>
+                    <div className="space-y-2">
+                      {entries.map((entry) => (
+                        <div
+                          key={entry.id}
+                          className={`rounded-xl border px-4 py-3 ${config.bg}`}
+                        >
+                          <p className={`text-sm ${config.color}`}>
+                            {entry.content}
+                          </p>
+                          <p className="text-xs opacity-40 mt-1">
+                            {formatDate(entry.created_at)}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                  <p className="mt-1 text-sm">{entry.content}</p>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </section>
